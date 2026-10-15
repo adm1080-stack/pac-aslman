@@ -1,294 +1,467 @@
-#define _USE_MATH_DEFINES
-#include <GLFW/glfw3.h>
-#include <iostream>
-#include <vector>
-#include <cmath>
-#include <cstdlib>
-
-struct Ghost {
-    float x, z;
-    float dirX, dirZ;
-    float r, g, b;
-};
-
-struct Dot {
-    float x, z;
-    bool active;
-};
-
-class Game {
-public:
-    Game() 
-        : window(nullptr), screenWidth(1280), screenHeight(720),
-          pacmanX(9.0f), pacmanZ(15.0f), dirX(0.0f), dirZ(0.0f),
-          reqDirX(0.0f), reqDirZ(0.0f), score(0), lives(3),
-          mouthAngle(0.0f), animationTime(0.0f) {}
-
-    ~Game() {
-        if (window) {
-            glfwDestroyWindow(window);
-            glfwTerminate();
-        }
-    }
-
-    bool Init(int width, int height, const char* title) {
-        screenWidth = width;
-        screenHeight = height;
-
-        if (!glfwInit()) return false;
-
-        window = glfwCreateWindow(screenWidth, screenHeight, title, NULL, NULL);
-        if (!window) {
-            glfwTerminate();
-            return false;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Pac-Man Game</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+            color: #fff;
         }
 
-        glfwMakeContextCurrent(window);
-        glEnable(GL_DEPTH_TEST);
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
 
-        // Populate dots from maze grid
-        for (int r = 0; r < MAP_HEIGHT; ++r) {
-            for (int c = 0; c < MAP_WIDTH; ++c) {
-                if (MAP[r][c] == 0) {
-                    dots.push_back({(float)c, (float)r, true});
+        .hud {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 24px;
+            font-weight: bold;
+            pointer-events: none;
+            z-index: 5;
+            text-shadow: 0 0 10px #000, 2px 2px 4px #000;
+        }
+
+        .lives { color: #f00; }
+        .score { color: #fff; }
+
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: auto;
+            z-index: 10;
+        }
+
+        .title {
+            font-size: 48px;
+            color: #ff0;
+            margin-bottom: 20px;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            text-shadow: 0 0 15px #ff0;
+        }
+
+        .btn {
+            background: #111;
+            color: #ff0;
+            border: 2px solid #ff0;
+            padding: 14px 32px;
+            font-size: 22px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(255, 255, 0, 0.3);
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            background: #ff0;
+            color: #000;
+            box-shadow: 0 0 20px rgba(255, 255, 0, 0.8);
+            transform: scale(1.05);
+        }
+
+        .hidden { display: none !important; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="hud">
+        <div class="lives" id="hud-lives">Lives: 3</div>
+        <div class="score" id="hud-score">Score: 0</div>
+    </div>
+
+    <div id="start-screen" class="overlay">
+        <div class="title">3D Pac-Man</div>
+        <p style="color: #aaa; margin-bottom: 30px; font-size: 18px;">Use <b>WASD</b> or <b>ARROW KEYS</b> to move Pac-Man</p>
+        <button class="btn" id="start-btn">PLAY NOW</button>
+    </div>
+
+    <div id="gameover-screen" class="overlay hidden">
+        <div class="title" id="gameover-title" style="color: #f00;">GAME OVER</div>
+        <p id="gameover-score" style="font-size: 20px; margin-bottom: 30px;"></p>
+        <button class="btn" id="restart-btn">PLAY AGAIN</button>
+    </div>
+
+    <script>
+        // Maze Map: 1 = Wall, 0 = Dot, 2 = Empty, 3 = Power Pellet
+        const MAP_DATA = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
+            [1,3,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1,3,1],
+            [1,0,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+            [1,0,1,1,0,1,0,1,1,1,1,1,0,1,0,1,1,0,1],
+            [1,0,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1],
+            [1,1,1,1,0,1,1,1,2,1,2,1,1,1,0,1,1,1,1],
+            [2,2,2,1,0,1,2,2,2,2,2,2,2,1,0,1,2,2,2],
+            [1,1,1,1,0,1,2,1,1,2,1,1,2,1,0,1,1,1,1],
+            [2,2,2,2,0,2,2,1,2,2,2,1,2,2,0,2,2,2,2],
+            [1,1,1,1,0,1,2,1,1,1,1,1,2,1,0,1,1,1,1],
+            [2,2,2,1,0,1,2,2,2,2,2,2,2,1,0,1,2,2,2],
+            [1,1,1,1,0,1,0,1,1,1,1,1,0,1,0,1,1,1,1],
+            [1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
+            [1,3,0,1,0,0,0,0,0,2,0,0,0,0,0,1,0,3,1],
+            [1,1,0,1,0,1,0,1,1,1,1,1,0,1,0,1,0,1,1],
+            [1,0,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1],
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+        ];
+
+        const GRID_ROWS = MAP_DATA.length;
+        const GRID_COLS = MAP_DATA[0].length;
+        const CELL_SIZE = 2;
+        const SPEED = 5.5;
+
+        let scene, camera, renderer;
+        let isPlaying = false;
+        let lives = 3, score = 0;
+        let dotsRemaining = 0;
+
+        let pacman = {
+            x: 9 * CELL_SIZE,
+            z: 15 * CELL_SIZE,
+            gridX: 9,
+            gridZ: 15,
+            dirX: 0,
+            dirZ: 0,
+            reqDirX: 0,
+            reqDirZ: 0,
+            mesh: null,
+            topMouth: null,
+            bottomMouth: null
+        };
+
+        let ghosts = [
+            { id: 0, x: 8*CELL_SIZE, z: 9*CELL_SIZE, gridX: 8, gridZ: 9, dirX: 0, dirZ: -1, color: 0xffffff, mesh: null },
+            { id: 1, x: 9*CELL_SIZE, z: 9*CELL_SIZE, gridX: 9, gridZ: 9, dirX: 0, dirZ: 1, color: 0xffffff, mesh: null },
+            { id: 2, x: 10*CELL_SIZE, z: 9*CELL_SIZE, gridX: 10, gridZ: 9, dirX: 1, dirZ: 0, color: 0xffffff, mesh: null }
+        ];
+
+        let dotsMap = [];
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+
+            camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set((GRID_COLS * CELL_SIZE)/2 - CELL_SIZE/2, 45, (GRID_ROWS * CELL_SIZE)/2 + 22);
+            camera.lookAt((GRID_COLS * CELL_SIZE)/2 - CELL_SIZE/2, 0, (GRID_ROWS * CELL_SIZE)/2 - 2);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+
+            const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+            scene.add(ambient);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(10, 40, 20);
+            scene.add(dirLight);
+
+            buildMaze();
+            buildPacman();
+            buildGhosts();
+
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('keydown', handleKeyDown);
+
+            document.getElementById('start-btn').addEventListener('click', startGame);
+            document.getElementById('restart-btn').addEventListener('click', startGame);
+        }
+
+        function buildMaze() {
+            const wallGeo = new THREE.BoxGeometry(CELL_SIZE, 1.2, CELL_SIZE);
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x0000a5, roughness: 0.3 });
+
+            const dotGeo = new THREE.TorusGeometry(0.18, 0.06, 8, 16);
+            const dotMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+            const powerGeo = new THREE.SphereGeometry(0.35, 16, 16);
+            const powerMat = new THREE.MeshBasicMaterial({ color: 0x4488ff });
+
+            dotsMap = Array.from({ length: GRID_ROWS }, () => Array(GRID_COLS).fill(null));
+
+            for (let r = 0; r < GRID_ROWS; r++) {
+                for (let c = 0; c < GRID_COLS; c++) {
+                    const val = MAP_DATA[r][c];
+                    const posX = c * CELL_SIZE;
+                    const posZ = r * CELL_SIZE;
+
+                    if (val === 1) {
+                        const wall = new THREE.Mesh(wallGeo, wallMat);
+                        wall.position.set(posX, 0.1, posZ);
+                        scene.add(wall);
+                    } else if (val === 0) {
+                        const dot = new THREE.Mesh(dotGeo, dotMat);
+                        dot.rotation.x = Math.PI / 2;
+                        dot.position.set(posX, 0, posZ);
+                        scene.add(dot);
+                        dotsMap[r][c] = { mesh: dot, isPower: false };
+                        dotsRemaining++;
+                    } else if (val === 3) {
+                        const power = new THREE.Mesh(powerGeo, powerMat);
+                        power.position.set(posX, 0, posZ);
+                        scene.add(power);
+                        dotsMap[r][c] = { mesh: power, isPower: true };
+                        dotsRemaining++;
+                    }
                 }
             }
         }
 
-        // Spawn Ghosts
-        ghosts.push_back({8.0f, 9.0f, 0.0f, -1.0f, 1.0f, 0.0f, 0.0f});
-        ghosts.push_back({9.0f, 9.0f, 0.0f, 1.0f, 1.0f, 0.7f, 0.8f});
-        ghosts.push_back({10.0f, 9.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f});
+        function buildPacman() {
+            pacman.mesh = new THREE.Group();
 
-        return true;
-    }
+            const pacMat = new THREE.MeshStandardMaterial({ color: 0xffff00, roughness: 0.2 });
+            const topGeo = new THREE.SphereGeometry(0.7, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+            const bottomGeo = new THREE.SphereGeometry(0.7, 16, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
 
-    void Run() {
-        float lastTime = (float)glfwGetTime();
+            pacman.topMouth = new THREE.Mesh(topGeo, pacMat);
+            pacman.bottomMouth = new THREE.Mesh(bottomGeo, pacMat);
 
-        while (!glfwWindowShouldClose(window)) {
-            float currentTime = (float)glfwGetTime();
-            float deltaTime = currentTime - lastTime;
-            lastTime = currentTime;
+            pacman.mesh.add(pacman.topMouth);
+            pacman.mesh.add(pacman.bottomMouth);
 
-            ProcessInput();
-            Update(deltaTime);
-            Render();
-
-            glfwPollEvents();
-        }
-    }
-
-private:
-    static const int MAP_WIDTH = 19;
-    static const int MAP_HEIGHT = 20;
-
-    GLFWwindow* window;
-    int screenWidth;
-    int screenHeight;
-
-    float pacmanX, pacmanZ;
-    float dirX, dirZ;
-    float reqDirX, reqDirZ;
-    int score;
-    int lives;
-
-    float mouthAngle;
-    float animationTime;
-
-    std::vector<Ghost> ghosts;
-    std::vector<Dot> dots;
-
-    static const int MAP[MAP_HEIGHT][MAP_WIDTH];
-
-    bool IsWall(int gridX, int gridZ) {
-        if (gridX < 0 || gridX >= MAP_WIDTH || gridZ < 0 || gridZ >= MAP_HEIGHT) return true;
-        return MAP[gridZ][gridX] == 1;
-    }
-
-    void ProcessInput() {
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
-            reqDirX = 0.0f; reqDirZ = -1.0f;
-        }
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-            reqDirX = 0.0f; reqDirZ = 1.0f;
-        }
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-            reqDirX = -1.0f; reqDirZ = 0.0f;
-        }
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-            reqDirX = 1.0f; reqDirZ = 0.0f;
-        }
-    }
-
-    void Update(float deltaTime) {
-        float speed = 4.0f;
-
-        int currentGridX = (int)std::round(pacmanX);
-        int currentGridZ = (int)std::round(pacmanZ);
-
-        if (std::abs(pacmanX - currentGridX) < 0.05f && std::abs(pacmanZ - currentGridZ) < 0.05f) {
-            if (!IsWall(currentGridX + (int)reqDirX, currentGridZ + (int)reqDirZ)) {
-                dirX = reqDirX;
-                dirZ = reqDirZ;
-            }
-            if (IsWall(currentGridX + (int)dirX, currentGridZ + (int)dirZ)) {
-                dirX = 0.0f;
-                dirZ = 0.0f;
-            }
+            scene.add(pacman.mesh);
         }
 
-        pacmanX += dirX * speed * deltaTime;
-        pacmanZ += dirZ * speed * deltaTime;
+        function buildGhosts() {
+            ghosts.forEach(g => {
+                const group = new THREE.Group();
+                const mat = new THREE.MeshStandardMaterial({ color: g.color, roughness: 0.2 });
 
-        // Animate mouth
-        animationTime += deltaTime * 10.0f;
-        mouthAngle = (std::sin(animationTime) + 1.0f) * 0.25f;
+                const head = new THREE.Mesh(new THREE.SphereGeometry(0.6, 16, 16), mat);
+                head.position.y = 0.2;
+                const body = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.6, 16), mat);
 
-        // Collect Dots
-        for (auto& dot : dots) {
-            if (dot.active && std::hypot(pacmanX - dot.x, pacmanZ - dot.z) < 0.5f) {
-                dot.active = false;
-                score += 10;
-                std::cout << "Score: " << score << std::endl;
-            }
+                group.add(head);
+                group.add(body);
+                scene.add(group);
+                g.mesh = group;
+            });
         }
 
-        // Update Ghosts
-        for (auto& g : ghosts) {
-            g.x += g.dirX * (speed * 0.6f) * deltaTime;
-            g.z += g.dirZ * (speed * 0.6f) * deltaTime;
+        function resetPositions() {
+            pacman.gridX = 9;
+            pacman.gridZ = 15;
+            pacman.x = pacman.gridX * CELL_SIZE;
+            pacman.z = pacman.gridZ * CELL_SIZE;
+            pacman.dirX = 0;
+            pacman.dirZ = 0;
+            pacman.reqDirX = 0;
+            pacman.reqDirZ = 0;
 
-            int gx = (int)std::round(g.x);
-            int gz = (int)std::round(g.z);
+            const gSpawns = [{x:8, z:9}, {x:9, z:9}, {x:10, z:9}];
+            ghosts.forEach((g, idx) => {
+                g.gridX = gSpawns[idx].x;
+                g.gridZ = gSpawns[idx].z;
+                g.x = g.gridX * CELL_SIZE;
+                g.z = g.gridZ * CELL_SIZE;
+                g.dirX = 0;
+                g.dirZ = -1;
+            });
 
-            if (std::abs(g.x - gx) < 0.05f && std::abs(g.z - gz) < 0.05f) {
-                if (IsWall(gx + (int)g.dirX, gz + (int)g.dirZ)) {
-                    g.dirX = -g.dirX;
-                    g.dirZ = -g.dirZ;
+            updateVisuals();
+        }
+
+        function updateVisuals() {
+            pacman.mesh.position.set(pacman.x, 0.3, pacman.z);
+
+            if (pacman.dirX === 1) pacman.mesh.rotation.y = 0;
+            else if (pacman.dirX === -1) pacman.mesh.rotation.y = Math.PI;
+            else if (pacman.dirZ === 1) pacman.mesh.rotation.y = Math.PI / 2;
+            else if (pacman.dirZ === -1) pacman.mesh.rotation.y = -Math.PI / 2;
+
+            ghosts.forEach(g => {
+                g.mesh.position.set(g.x, 0.3, g.z);
+            });
+        }
+
+        function startGame() {
+            lives = 3;
+            score = 0;
+            dotsRemaining = 0;
+
+            for (let r = 0; r < GRID_ROWS; r++) {
+                for (let c = 0; c < GRID_COLS; c++) {
+                    if (dotsMap[r][c]) {
+                        dotsMap[r][c].mesh.visible = true;
+                        dotsRemaining++;
+                    }
                 }
             }
+
+            document.getElementById('hud-lives').innerText = `Lives: ${lives}`;
+            document.getElementById('hud-score').innerText = `Score: ${score}`;
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('gameover-screen').classList.add('hidden');
+
+            resetPositions();
+            isPlaying = true;
         }
-    }
 
-    void DrawCube(float x, float y, float z, float size, float r, float g, float b) {
-        glColor3f(r, g, b);
-        glPushMatrix();
-        glTranslatef(x, y, z);
-        float h = size / 2.0f;
+        function handleKeyDown(e) {
+            if (!isPlaying) return;
 
-        glBegin(GL_QUADS);
-        glVertex3f(-h, -h,  h); glVertex3f( h, -h,  h); glVertex3f( h,  h,  h); glVertex3f(-h,  h,  h);
-        glVertex3f(-h, -h, -h); glVertex3f(-h,  h, -h); glVertex3f( h,  h, -h); glVertex3f( h, -h, -h);
-        glVertex3f(-h,  h, -h); glVertex3f(-h,  h,  h); glVertex3f( h,  h,  h); glVertex3f( h,  h, -h);
-        glVertex3f(-h, -h, -h); glVertex3f( h, -h, -h); glVertex3f( h, -h,  h); glVertex3f(-h, -h,  h);
-        glVertex3f( h, -h, -h); glVertex3f( h,  h, -h); glVertex3f( h,  h,  h); glVertex3f( h, -h,  h);
-        glVertex3f(-h, -h, -h); glVertex3f(-h, -h,  h); glVertex3f(-h,  h,  h); glVertex3f(-h,  h, -h);
-        glEnd();
-
-        glPopMatrix();
-    }
-
-    void DrawSphere(float x, float y, float z, float radius, float r, float g, float b) {
-        glColor3f(r, g, b);
-        glPushMatrix();
-        glTranslatef(x, y, z);
-        
-        int lats = 12, longs = 12;
-        for (int i = 0; i <= lats; i++) {
-            float lat0 = M_PI * (-0.5f + (float)(i - 1) / lats);
-            float z0  = std::sin(lat0);
-            float zr0 = std::cos(lat0);
-
-            float lat1 = M_PI * (-0.5f + (float)i / lats);
-            float z1  = std::sin(lat1);
-            float zr1 = std::cos(lat1);
-
-            glBegin(GL_QUAD_STRIP);
-            for (int j = 0; j <= longs; j++) {
-                float lng = 2 * M_PI * (float)(j - 1) / longs;
-                float xVal = std::cos(lng);
-                float yVal = std::sin(lng);
-
-                glVertex3f(xVal * zr0 * radius, yVal * zr0 * radius, z0 * radius);
-                glVertex3f(xVal * zr1 * radius, yVal * zr1 * radius, z1 * radius);
-            }
-            glEnd();
+            const k = e.key.toLowerCase();
+            if (k === 'w' || k === 'arrowup') { pacman.reqDirX = 0; pacman.reqDirZ = -1; }
+            else if (k === 's' || k === 'arrowdown') { pacman.reqDirX = 0; pacman.reqDirZ = 1; }
+            else if (k === 'a' || k === 'arrowleft') { pacman.reqDirX = -1; pacman.reqDirZ = 0; }
+            else if (k === 'd' || k === 'arrowright') { pacman.reqDirX = 1; pacman.reqDirZ = 0; }
         }
-        glPopMatrix();
-    }
 
-    void Render() {
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        function isWall(gx, gz) {
+            if (gx < 0 || gx >= GRID_COLS || gz < 0 || gz >= GRID_ROWS) return true;
+            return MAP_DATA[gz][gx] === 1;
+        }
 
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        float aspect = (float)screenWidth / (float)screenHeight;
-        
-        glOrtho(-12.0f * aspect, 12.0f * aspect, -12.0f, 12.0f, -50.0f, 50.0f);
+        function updatePhysics(dt) {
+            if (!isPlaying) return;
 
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-        glRotatef(55.0f, 1.0f, 0.0f, 0.0f);
-        glRotatef(-30.0f, 0.0f, 1.0f, 0.0f);
-        glTranslatef(-MAP_WIDTH / 2.0f, 0.0f, -MAP_HEIGHT / 2.0f);
+            const targetX = pacman.gridX * CELL_SIZE;
+            const targetZ = pacman.gridZ * CELL_SIZE;
 
-        // Draw Walls
-        for (int r = 0; r < MAP_HEIGHT; ++r) {
-            for (int c = 0; c < MAP_WIDTH; ++c) {
-                if (MAP[r][c] == 1) {
-                    DrawCube((float)c, 0.0f, (float)r, 0.9f, 0.0f, 0.2f, 0.8f);
+            const atNode = Math.abs(pacman.x - targetX) < 0.05 && Math.abs(pacman.z - targetZ) < 0.05;
+
+            if (atNode) {
+                pacman.x = targetX;
+                pacman.z = targetZ;
+
+                if (pacman.reqDirX !== 0 || pacman.reqDirZ !== 0) {
+                    if (!isWall(pacman.gridX + pacman.reqDirX, pacman.gridZ + pacman.reqDirZ)) {
+                        pacman.dirX = pacman.reqDirX;
+                        pacman.dirZ = pacman.reqDirZ;
+                    }
+                }
+
+                if (isWall(pacman.gridX + pacman.dirX, pacman.gridZ + pacman.dirZ)) {
+                    pacman.dirX = 0;
+                    pacman.dirZ = 0;
+                } else {
+                    pacman.gridX += pacman.dirX;
+                    pacman.gridZ += pacman.dirZ;
+                }
+
+                const r = pacman.gridZ;
+                const c = pacman.gridX;
+                if (dotsMap[r] && dotsMap[r][c] && dotsMap[r][c].mesh.visible) {
+                    dotsMap[r][c].mesh.visible = false;
+                    score += dotsMap[r][c].isPower ? 50 : 10;
+                    dotsRemaining--;
+                    document.getElementById('hud-score').innerText = `Score: ${score}`;
+
+                    if (dotsRemaining <= 0) {
+                        endGame(true);
+                    }
                 }
             }
+
+            pacman.x += pacman.dirX * SPEED * dt;
+            pacman.z += pacman.dirZ * SPEED * dt;
+
+            ghosts.forEach(g => {
+                const gTargetX = g.gridX * CELL_SIZE;
+                const gTargetZ = g.gridZ * CELL_SIZE;
+                const gAtNode = Math.abs(g.x - gTargetX) < 0.05 && Math.abs(g.z - gTargetZ) < 0.05;
+
+                if (gAtNode) {
+                    g.x = gTargetX;
+                    g.z = gTargetZ;
+
+                    const validDirs = [
+                        {x: 0, z: -1}, {x: 0, z: 1}, {x: -1, z: 0}, {x: 1, z: 0}
+                    ].filter(d => !isWall(g.gridX + d.x, g.gridZ + d.z));
+
+                    if (validDirs.length > 0) {
+                        const nonReverse = validDirs.filter(d => !(d.x === -g.dirX && d.z === -g.dirZ));
+                        const choices = nonReverse.length > 0 ? nonReverse : validDirs;
+                        const pick = choices[Math.floor(Math.random() * choices.length)];
+                        g.dirX = pick.x;
+                        g.dirZ = pick.y || pick.z;
+                    }
+
+                    g.gridX += g.dirX;
+                    g.gridZ += g.dirZ;
+                }
+
+                g.x += g.dirX * (SPEED * 0.75) * dt;
+                g.z += g.dirZ * (SPEED * 0.75) * dt;
+
+                const dist = Math.hypot(pacman.x - g.x, pacman.z - g.z);
+                if (dist < 1.0) {
+                    lives--;
+                    document.getElementById('hud-lives').innerText = `Lives: ${lives}`;
+                    if (lives <= 0) {
+                        endGame(false);
+                    } else {
+                        resetPositions();
+                    }
+                }
+            });
+
+            updateVisuals();
         }
 
-        // Draw Dots
-        for (const auto& dot : dots) {
-            if (dot.active) {
-                DrawSphere(dot.x, 0.0f, dot.z, 0.15f, 1.0f, 1.0f, 1.0f);
+        function endGame(won) {
+            isPlaying = false;
+            const title = document.getElementById('gameover-title');
+            title.innerText = won ? "YOU WIN!" : "GAME OVER";
+            title.style.color = won ? "#0f0" : "#f00";
+            document.getElementById('gameover-score').innerText = `Final Score: ${score}`;
+            document.getElementById('gameover-screen').classList.remove('hidden');
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        let lastTime = 0;
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            const dt = Math.min((timestamp - lastTime) / 1000, 0.1);
+            lastTime = timestamp;
+
+            if (isPlaying && (pacman.dirX !== 0 || pacman.dirZ !== 0)) {
+                const mouthAngle = (Math.sin(timestamp * 0.018) + 1) * 0.25;
+                pacman.topMouth.rotation.x = -mouthAngle;
+                pacman.bottomMouth.rotation.x = mouthAngle;
             }
+
+            updatePhysics(dt);
+            renderer.render(scene, camera);
         }
 
-        // Draw Pac-Man
-        DrawSphere(pacmanX, 0.2f, pacmanZ, 0.4f, 1.0f, 1.0f, 0.0f);
-
-        // Draw Ghosts
-        for (const auto& g : ghosts) {
-            DrawSphere(g.x, 0.2f, g.z, 0.35f, g.r, g.g, g.b);
-        }
-
-        glfwSwapBuffers(window);
-    }
-};
-
-const int Game::MAP[Game::MAP_HEIGHT][Game::MAP_WIDTH] = {
-    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
-    {1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
-    {1,0,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1,0,1},
-    {1,0,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1,0,1},
-    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-    {1,0,1,1,0,1,0,1,1,1,1,1,0,1,0,1,1,0,1},
-    {1,0,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1},
-    {1,1,1,1,0,1,1,1,2,1,2,1,1,1,0,1,1,1,1},
-    {2,2,2,1,0,1,2,2,2,2,2,2,2,1,0,1,2,2,2},
-    {1,1,1,1,0,1,2,1,1,2,1,1,2,1,0,1,1,1,1},
-    {2,2,2,2,0,2,2,1,2,2,2,1,2,2,0,2,2,2,2},
-    {1,1,1,1,0,1,2,1,1,1,1,1,2,1,0,1,1,1,1},
-    {2,2,2,1,0,1,2,2,2,2,2,2,2,1,0,1,2,2,2},
-    {1,1,1,1,0,1,0,1,1,1,1,1,0,1,0,1,1,1,1},
-    {1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
-    {1,0,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1,0,1},
-    {1,0,0,1,0,0,0,0,0,2,0,0,0,0,0,1,0,0,1},
-    {1,1,0,1,0,1,0,1,1,1,1,1,0,1,0,1,0,1,1},
-    {1,0,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1},
-    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
-};
-
-int main() {
-    Game game;
-    if (game.Init(1280, 720, "Native 3D Pac-Man")) {
-        game.Run();
-    }
-    return 0;
-}
+        init();
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
